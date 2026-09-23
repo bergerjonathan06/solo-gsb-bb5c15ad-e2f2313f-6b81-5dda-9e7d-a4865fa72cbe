@@ -11,6 +11,10 @@ COPY server.js ./
 COPY src ./src
 COPY public ./public
 
+# 页面与接口：
+#   /                裁切试排页（单张 / 批量 / 多纸型成本排产）
+#   /offcuts.html    余料库存与复用预占页
+#   /api/...         JSON 接口（余料库存为进程内内存态，单实例部署，重启清空）
 ENV NODE_ENV=production
 ENV PORT=3000
 EXPOSE 3000

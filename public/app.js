@@ -545,6 +545,7 @@ function showCompareSheet(i) {
   renderSvg(sheet);
   renderCutList(sheet);
   renderUnplaced(sheet);
+  updateOffcutEntry(sheet);
 }
 
 function clearCompareUi() {
@@ -552,6 +553,7 @@ function clearCompareUi() {
   $('compareBar').hidden = true;
   $('compareBar').innerHTML = '';
   clearStackUi();
+  hideOffcutEntry();
 }
 
 /* ---------------- 批量排产 ---------------- */
@@ -716,6 +718,7 @@ function renderBatch(data) {
       ? '<div class="placeholder">剩余材料组不成一整套（成套生产无进展，本轮不扣库存）</div>'
       : '<div class="placeholder">没有可用纸张布局（第一张纸就排不进任何成品）</div>';
     $('cutList').innerHTML = '';
+    hideOffcutEntry();
   }
 
   // 批量剩余需求（结构同单张的 unplaced）；成套模式由套数进度表呈现
@@ -736,6 +739,7 @@ function showBatchSheet(i) {
   renderStats(sheet);
   renderSvg(sheet);
   renderCutList(sheet);
+  updateOffcutEntry(sheet);
 }
 
 function clearBatchUi() {
@@ -745,6 +749,7 @@ function clearBatchUi() {
   clearOrderSummary();
   clearKitProgress();
   clearStackUi();
+  hideOffcutEntry();
 }
 
 /* ---------------- 多纸型成本排产 ---------------- */
@@ -852,6 +857,7 @@ function renderCost(data) {
     $('cutList').innerHTML = '';
     $('rankList').hidden = true;
     $('rankList').innerHTML = '';
+    hideOffcutEntry();
   }
 
   if (data.kit) {
@@ -890,6 +896,7 @@ function showCostSheet(i) {
   renderSvg(sh.layout);
   renderCutList(sh.layout);
   renderRank(sh);
+  updateOffcutEntry(sh.layout);
 }
 
 function renderRank(sh) {
@@ -945,6 +952,7 @@ function clearCostUi() {
   clearOrderSummary();
   clearKitProgress();
   clearStackUi();
+  hideOffcutEntry();
 }
 
 /* ---------------- 叠纸裁切排程（复用批量/成本结果） ---------------- */
@@ -1801,6 +1809,51 @@ async function generate() {
     $('generate').disabled = false;
   }
 }
+
+/* ---------------- 余料入库入口（跳转余料库存页并携带当前结果） ---------------- */
+
+const OFFCUT_INGEST_KEY = 'sheetLayout.offcutIngest.v1';
+
+/** 依据当前查看中的排料结果更新「余料入库」入口的显隐 */
+function updateOffcutEntry(result) {
+  const box = $('offcutEntry');
+  if (result && Array.isArray(result.frees) && result.frees.length > 0) {
+    box.hidden = false;
+    box.dataset.body = JSON.stringify(result);
+  } else {
+    box.hidden = true;
+    box.dataset.body = '';
+  }
+}
+
+function hideOffcutEntry() {
+  const box = $('offcutEntry');
+  box.hidden = true;
+  box.dataset.body = '';
+}
+
+$('offcutToStock').addEventListener('click', () => {
+  const box = $('offcutEntry');
+  if (box.hidden || !box.dataset.body) return;
+  let body;
+  try { body = JSON.parse(box.dataset.body); } catch (_) { return; }
+  // 单张查看的是某一张布局；批量 / 成本模式下优先携带完整结果（含全部 sheets）
+  if (costState && costState.sheets && costState.sheets.length) {
+    body = costState;
+  } else if (batchState && batchState.sheets && batchState.sheets.length) {
+    body = batchState;
+  }
+  const stamp = new Date();
+  const batchRef = `UI-${stamp.getFullYear()}${String(stamp.getMonth() + 1).padStart(2, '0')}${String(stamp.getDate()).padStart(2, '0')}-${String(stamp.getHours()).padStart(2, '0')}${String(stamp.getMinutes()).padStart(2, '0')}${String(stamp.getSeconds()).padStart(2, '0')}`;
+  try {
+    sessionStorage.setItem(OFFCUT_INGEST_KEY, JSON.stringify({ body, batchRef }));
+  } catch (_) {
+    // 结果过大（如 500 张纸）时提示改用接口 / 手工粘贴
+    alert('当前排料结果过大，无法经页面跳转携带；请在余料库存页直接粘贴本次接口返回的 JSON。');
+    return;
+  }
+  window.location.href = '/offcuts.html';
+});
 
 $('preset').addEventListener('change', (e) => {
   const v = e.target.value;

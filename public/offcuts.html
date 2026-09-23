@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>余料库存与复用预占 · Sheet Layout</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <h1>余料库存与复用预占</h1>
+    <p class="subtitle">把排料结果的余料（layout.frees）标准化为可追踪记录 · 保留纸型 / 纹向 / 刀缝 / 坐标 / 尺寸 / 来源批次 · 按旋转与纹向可行性、最小剩余面积确定性预占 · 一次请求原子凑足，不足不扣料</p>
+    <nav class="topnav">
+      <a href="/">← 裁切试排</a>
+      <a href="/offcuts.html" class="active">余料库存</a>
+    </nav>
+  </header>
+
+  <main class="offcut-layout">
+    <section class="panel offcut-forms">
+      <h2>从排料结果入库</h2>
+      <p class="hint">在「裁切试排」页生成方案后点击「余料入库」可直接携带结果跳转；也可在此粘贴
+        <code>/api/layout</code>、<code>/api/layout/batch</code>、<code>/api/layout/cost</code>
+        的返回 JSON（含 <code>frees</code> 或 <code>sheets</code>）。</p>
+      <label>来源批次号（可选，留空自动生成 IN-0001…）
+        <input type="text" id="ingestBatch" maxlength="64" placeholder="如：SO-2026-001 余料" />
+      </label>
+      <label>排料结果 JSON
+        <textarea id="ingestJson" rows="6" placeholder='{"paper":{...},"frees":[...] } 或 {"sheets":[...]}'></textarea>
+      </label>
+      <div class="actions">
+        <button type="button" id="ingestBtn" class="btn btn-primary">入库</button>
+        <button type="button" id="ingestClear" class="btn btn-ghost">清空</button>
+      </div>
+      <div id="ingestMsg" class="form-error" hidden></div>
+
+      <h2>手工录入余料</h2>
+      <p class="hint">逐行登记实有边角料：纸型名称（可空）、纸面宽高、纹向、刀缝、余料坐标与宽高。</p>
+      <div class="oc-head">
+        <span>纸型名称</span><span>纸宽</span><span>纸高</span><span>纹向</span><span>刀缝</span>
+        <span>x</span><span>y</span><span>余料宽</span><span>余料高</span><span></span>
+      </div>
+      <div id="ocRows"></div>
+      <button type="button" id="ocAddRow" class="btn btn-ghost">＋ 添加余料</button>
+      <label style="margin-top:8px">来源批次号（可选）
+        <input type="text" id="manualBatch" maxlength="64" placeholder="留空自动生成" />
+      </label>
+      <div class="actions">
+        <button type="button" id="manualIngestBtn" class="btn btn-primary">手工入库</button>
+      </div>
+      <div id="manualMsg" class="form-error" hidden></div>
+
+      <h2>复用预占</h2>
+      <p class="hint">给定成品宽高、数量与纹向要求：服务端在<b>可用</b>余料中逐件按
+        <b>旋转 / 纹向可行性</b>（成品纹向须与余料纹向平行）与<b>最小剩余面积</b>确定性选料，
+        每件占用一条余料记录。<b>数量无法全部满足时整单不生效（不扣减任何余料），返回缺口明细。</b></p>
+      <div class="alloc-grid">
+        <label>成品宽 (mm)
+          <input type="number" id="allocW" min="0" step="0.1" placeholder="宽" />
+        </label>
+        <label>成品高 (mm)
+          <input type="number" id="allocH" min="0" step="0.1" placeholder="高" />
+        </label>
+        <label>数量
+          <input type="number" id="allocQty" min="1" step="1" value="1" />
+        </label>
+        <label>纹向要求
+          <select id="allocGrain">
+            <option value="any" selected>不限</option>
+            <option value="along-width">沿自身宽</option>
+            <option value="along-height">沿自身高</option>
+          </select>
+        </label>
+        <label class="alloc-note">备注（可选）
+          <input type="text" id="allocNote" maxlength="128" />
+        </label>
+      </div>
+      <div class="actions">
+        <button type="button" id="allocBtn" class="btn btn-primary">预占</button>
+      </div>
+      <div id="allocMsg" class="form-error" hidden></div>
+      <div id="allocResult" class="alloc-result" hidden></div>
+    </section>
+
+    <section class="panel offcut-stock">
+      <h2>余料库存
+        <button type="button" id="refreshBtn" class="btn btn-ghost oc-refresh">刷新</button>
+      </h2>
+      <div id="ocSummary" class="stats"></div>
+      <div class="oc-filters">
+        <label>状态
+          <select id="fStatus">
+            <option value="all">全部</option>
+            <option value="available" selected>可用</option>
+            <option value="reserved">已预占</option>
+          </select>
+        </label>
+        <label>纹向
+          <select id="fGrain">
+            <option value="">全部</option>
+            <option value="along-width">沿宽</option>
+            <option value="along-height">沿高</option>
+          </select>
+        </label>
+        <label>来源
+          <select id="fSource">
+            <option value="">全部</option>
+            <option value="manual">手工录入</option>
+            <option value="single">单张试排</option>
+            <option value="batch">批量排产</option>
+            <option value="cost">成本排产</option>
+          </select>
+        </label>
+        <label>来源批次
+          <input type="text" id="fBatch" placeholder="批次号精确匹配" />
+        </label>
+        <button type="button" id="filterBtn" class="btn btn-ghost">查询</button>
+      </div>
+      <div id="ocTableWrap" class="oc-table-wrap"></div>
+
+      <h2 style="margin-top:18px">预占单</h2>
+      <div id="ocAllocations" class="oc-allocations"></div>
+    </section>
+  </main>
+
+  <footer class="foot">
+    坐标相对来源纸面左上角，所有尺寸单位 mm；余料库存保存在服务端进程内存中（单实例，重启清空）。
+  </footer>
+
+  <script src="offcuts.js"></script>
+</body>
+</html>

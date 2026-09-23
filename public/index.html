@@ -10,6 +10,10 @@
   <header class="topbar">
     <h1>单张纸直线裁切试排</h1>
     <p class="subtitle">断头台式裁切 · 每次一刀切到底、一分为二 · 成品允许旋转 90°（受纹向约束） · 刀缝不侵占成品 · 单张试排三策略方案比选 · 支持批量排产、多纸型成本排产、叠纸裁切排程、执行工单、裁切抽检计划与现场进度</p>
+    <nav class="topnav">
+      <a href="/" class="active">裁切试排</a>
+      <a href="/offcuts.html">余料库存</a>
+    </nav>
   </header>
 
   <main class="layout">
@@ -179,6 +183,11 @@
         <div class="placeholder">填写左侧参数后点击「生成裁切方案」</div>
       </div>
       <div id="cutList" class="cut-list"></div>
+      <div id="offcutEntry" class="offcut-entry" hidden>
+        <button type="button" id="offcutToStock" class="btn btn-primary">余料入库 →</button>
+        <p class="hint">把当前排料结果中的余料（frees）登记到<a href="/offcuts.html">余料库存</a>：
+          标准化保留纸型、纹向、刀缝、坐标、尺寸与来源批次，可在库存页查询、按成品规格预占复用并释放预占。</p>
+      </div>
       <div id="rankList" class="rank-wrap" hidden></div>
       <div id="unplaced" class="unplaced"></div>
     </section>

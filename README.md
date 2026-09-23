@@ -13,6 +13,10 @@
 工单结果还可生成**裁切抽检计划**：把每个已分配全局刀次作为必须覆盖目标，抽中一张纸即覆盖
 其参与的全部刀次，逐轮按新增覆盖刀次 → 参与刀次总数 → 纸张序号选纸，返回抽中纸张、
 各自覆盖刀次、逐轮选择依据、覆盖率与未覆盖刀次；未分配刀单列且不计入分母。
+在任何排料结果旁还可进入**余料库存与复用预占**：把每张纸 `layout.frees` 标准化为
+可追踪余料记录（保留纸型、纹向、刀缝、坐标、尺寸与来源批次），支持余料录入 / 查询，
+并按成品宽高、数量与纹向要求原子预占复用（按旋转 / 纹向可行性与最小剩余面积确定性选料），
+页面可查看可用 / 已预占余料并释放预占。
 
 ## 裁切规则
 
@@ -430,6 +434,91 @@ schedule/workOrder 不一致（刀次缺来源批次、与排程批次成员不�
 停止原因、**逐轮选择依据表**、抽中纸张的覆盖刀次明细（刀次胶囊，含来源批次与成员提示）、
 未覆盖刀次表与未分配刀单列提示。重新生成排产方案 / 工单或切换模式时自动重置。
 
+## 余料库存与复用预占（frees 标准化 + 原子预占）
+
+排料完成后，每张纸的 `layout.frees`（余料矩形）可以一键转入**余料库存**：
+服务端把每块余料标准化为**可追踪余料记录**，完整保留
+
+- **纸型**：`paperName`（可空）、`paperWidth`、`paperHeight`；
+- **纹向** `grain`：`along-width`（沿宽）/ `along-height`（沿高），取自来源纸张；
+- **刀缝** `kerf`：来源纸张的刀缝宽度；
+- **坐标与尺寸**：`x` / `y`（相对来源纸面左上角）、`width` / `height` / `area`；
+- **来源批次** `source.batchRef`：入库批次号（手填或自动生成 `IN-0001…`），
+  以及来源类型（`single` 单张试排 / `batch` 批量 / `cost` 成本 / `manual` 手工）、
+  第几张纸 / 轮次 / 纸型 / 订单号。
+
+记录状态为 **`available`（可用）** 或 **`reserved`（已预占）**，
+每条记录带全局唯一编号 `OC-000001…`。
+
+### 余料录入 / 查询
+
+- `POST /api/offcuts/ingest`：余料入库，请求体支持三种形态（自动识别）：
+  1. **单张排料结果**：直接提交 `/api/layout`（或比选结果的 `best.layout`）返回体（含 `paper` + `frees`）；
+  2. **批量 / 多纸型结果**：提交 `/api/layout/batch`、`/api/layout/cost` 的完整返回（含 `sheets`，
+     成本结果逐张为 `{ ..., layout }` 包装，自动识别），逐张展开全部 `frees`；
+  3. **手工录入**：`{ "batchRef"?: "...", "offcuts": [{ paperName?, paperWidth, paperHeight,
+     grain?, kerf?, x?, y?, width, height }] }`（刀缝 / 坐标缺省为 0，纹向缺省沿宽）。
+
+  可选 `batchRef`（≤64 字符，留空自动生成）与 `note`。返回 `batchRef`、`sourceType`、
+  `createdCount` 与全部新建记录。
+- `GET /api/offcuts`：查询库存，可选筛选 `status`（`available` / `reserved` / `all`，缺省 all）、
+  `grain`、`sourceType`、`batchRef`；返回 `summary`（总数、可用 / 已预占条数与面积）、
+  `offcuts`（记录列表，已预占者含 `reservation` 预占信息）与 `allocations`（全部预占单）。
+
+### 复用预占（确定性选料 + 原子性）
+
+`POST /api/offcuts/allocate` 请求体：
+
+```json
+{ "width": 210, "height": 285, "quantity": 4, "grain": "along-height", "note": "可选备注" }
+```
+
+服务端在**当前可用**余料中，逐件（每件成品占用一整条余料记录，整料预占）按以下顺序确定性选择：
+
+1. **旋转 / 纹向可行性**：规则与排样完全一致——成品纹向须与余料纹向平行：
+   不旋转时成品宽 ∥ 余料宽，旋转 90° 后互换；`any`（不限）两种朝向均可；
+   几何放得下但纹向不允许的朝向不参与候选；
+2. **最小剩余面积**：`余料面积 − 成品面积` 最小者优先（最省料的最小适配）；
+3. 平局依次按：余料**短边**、**长边**、**不旋转优先**、余料**录入序号**（id 升序）决胜。
+
+**原子预占**：先在内存中试排出完整预占计划，只有凑足 `quantity` 件才一次性落账，生成预占单
+`RSV-000001…`（其名下记录全部翻转为 `reserved`）。**无法足额满足时不扣减任何已占用 / 可用记录**，
+返回 **HTTP 409** 与缺口明细：
+
+```json
+{
+  "error": "可用余料仅能满足 2 / 4 件，缺口 2 件；本次未预占任何余料",
+  "code": "OFFCUT_SHORTAGE",
+  "shortage": {
+    "requested": { "width": 210, "height": 285, "grain": "along-height", "quantity": 4 },
+    "fulfillable": 2,
+    "gap": 2,
+    "reason": "insufficient-stock"
+  }
+}
+```
+
+`reason` 为 `no-feasible-offcut`（一件都放不下：尺寸或纹向不满足）或 `insufficient-stock`（部分可行）。
+成功返回 `reservationId`、`note`、`createdAt`、`request`、`allocatedCount` 与 `items`
+（每条：`offcutId`、是否旋转 `rotated`、实际占位 `placedWidth/Height`、`leftoverArea` 与
+完整余料记录 `offcut`），以及最新 `summary`。
+
+`POST /api/offcuts/release/:reservationId`：**释放整张预占单**，其名下全部余料恢复 `available`、
+预占单删除；单号不存在返回 404。
+
+> **库存为服务端进程内内存态**（单实例、重启清空、不依赖外部服务或数据库）；
+> 单次入库上限 20000 条、单次预占上限 100000 件。
+
+### 页面入口
+
+- 任意排料结果下方提供**「余料入库 →」**按钮：把当前查看的单张布局（或当前批量 / 多纸型的
+  全部 `sheets`）经 `sessionStorage` 带到余料库存页，自动填入入库文本框与建议批次号；
+- 顶部导航在**「裁切试排」/「余料库存」**两个页面间切换；
+- 余料库存页（`/offcuts.html`）支持：粘贴排料结果 JSON 入库、手工逐行录入、
+  按状态 / 纹向 / 来源 / 批次筛选查询（可用 / 已预占余料分色显示，已预占者标明所属预占单）、
+  填写成品宽高 / 数量 / 纹向发起预占（成功展示逐件选料明细；缺口时整单红字提示缺口件数、
+  可满足件数与“未扣减任何余料”），以及在预占单卡片上**释放预占**。
+
 ## 单条命令启动（需要 Docker + Docker Compose）
 
 在项目根目录执行**一条命令**即可构建镜像并启动服务（无需预装 Node.js 或任何依赖）：
@@ -440,6 +529,10 @@ docker compose up -d --build
 
 启动后浏览器访问： **http://localhost:3000**（容器内固定监听 3000 端口）。
 
+- 裁切试排页面：**http://localhost:3000/**
+- 余料库存页面：**http://localhost:3000/offcuts.html**
+- 接口基础地址：**http://localhost:3000/api/...**（如 `POST http://localhost:3000/api/offcuts/allocate`）
+
 健康检查与接口调用示例：
 
 ```bash
@@ -447,6 +540,28 @@ curl http://localhost:3000/api/health          # -> {"ok":true}
 curl -X POST http://localhost:3000/api/layout/stack/work-order/sampling \
   -H 'Content-Type: application/json' \
   -d '{"workOrder": <工单返回JSON>, "schedule": <排程返回JSON>, "maxSamples": 3}'
+```
+
+余料接口调用示例：
+
+```bash
+# 排料结果入库（也可手工录入：{"batchRef":"...","offcuts":[{...}]}）
+curl -X POST http://localhost:3000/api/layout \
+  -H 'Content-Type: application/json' \
+  -d '{"paperW":889,"paperH":1194,"kerf":3,"products":[{"width":210,"height":285,"quantity":6}]}' \
+  | curl -X POST http://localhost:3000/api/offcuts/ingest \
+      -H 'Content-Type: application/json' -d @-
+
+# 查询可用余料
+curl 'http://localhost:3000/api/offcuts?status=available'
+
+# 原子预占（缺口时返回 HTTP 409 与缺口明细，不扣减任何记录）
+curl -X POST http://localhost:3000/api/offcuts/allocate \
+  -H 'Content-Type: application/json' \
+  -d '{"width":210,"height":285,"quantity":4,"grain":"along-height"}'
+
+# 释放预占
+curl -X POST http://localhost:3000/api/offcuts/release/RSV-000001
 ```
 
 停止 / 删除容器：
@@ -530,6 +645,13 @@ npm start          # 默认 http://localhost:3000，可用 PORT=8080 npm start �
 - `POST /api/layout/stack/work-order` — 执行工单（`schedule` 传叠纸排程返回或直接传 `sheets`/`stackLimit`；另需 `maxCutsPerShift`、可选 `maxSheetsPerBatch`；`?format=csv` 下载）
 - `POST /api/layout/stack/work-order/progress` — 现场进度（`workOrder` 传执行工单返回、可选 `schedule`；`completed` 传已完成全局刀号；返回可立即执行/仍阻塞刀次、待完成父刀与班次/整单完成率）
 - `POST /api/layout/stack/work-order/sampling` — 裁切抽检计划（`workOrder` 传执行工单返回、`schedule` 传叠纸排程返回、`maxSamples` 抽检用纸上限；返回抽中纸张与各自覆盖刀次、逐轮选择依据、覆盖率、未覆盖刀次与单列的未分配刀）
+
+余料库存与复用预占：
+
+- `POST /api/offcuts/ingest` — 余料入库（请求体为单张排料结果 `paper`+`frees`、批量 / 成本结果 `sheets`，或手工 `offcuts` 列表；可选 `batchRef` / `note`）
+- `GET /api/offcuts` — 余料查询（可选 `status`：available/reserved/all、`grain`、`sourceType`、`batchRef`；返回汇总、余料记录与预占单列表）
+- `POST /api/offcuts/allocate` — 复用预占（入参 `width`/`height`/`quantity`/`grain`/`note?`；按旋转纹向可行性与最小剩余面积确定性选料，原子预占；不足返回 HTTP 409 与缺口明细且不扣减任何记录）
+- `POST /api/offcuts/release/:reservationId` — 释放整张预占单（名下余料恢复可用；单号不存在返回 404）
 
 单张请求示例（含纹向）：
 
@@ -770,17 +892,20 @@ npm start          # 默认 http://localhost:3000，可用 PORT=8080 npm start �
 
 ```
 .
-├── server.js            # Express 入口：静态页面 + /api/layout + /api/layout/compare + /api/layout/batch + /api/layout/cost + /api/layout/stack + /api/layout/stack/work-order + /api/layout/stack/work-order/progress + /api/layout/stack/work-order/sampling
+├── server.js            # Express 入口：静态页面 + /api/layout + /api/layout/compare + /api/layout/batch + /api/layout/cost + /api/layout/stack + /api/layout/stack/work-order + /api/layout/stack/work-order/progress + /api/layout/stack/work-order/sampling + /api/offcuts（入库 / 查询 / 预占 / 释放）
 ├── src/packer.js        # 断头台二分排样核心（单张 layout + 三策略方案比选 layoutCompare + 固定纸型批量 layoutBatch，含纹向、订单隔离与成套生产）
 ├── src/cost.js          # 多纸型成本排产（逐轮试排候选、单位面积成本择优、库存成本核算、订单×纸型隔离与成套生产）
+├── src/offcuts.js       # 余料库存与复用预占（layout.frees 标准化可追踪记录：纸型/纹向/刀缝/坐标/尺寸/来源批次；最小剩余面积确定性选料、旋转纹向可行性、原子预占、缺口 409、释放预占；进程内内存态）
 ├── src/stack.js         # 叠纸裁切排程（复用批量/成本切割树，按区域宽高/刀向/刀位/刀缝合批、父刀约束与确定性选批；返回 dependencies 父刀图）
 ├── src/workorder.js     # 执行工单（排程批次按每班刀次/每批纸张容量做稳定拓扑分班、跨班次依赖、未分配原因、CSV 导出）
 ├── src/progress.js      # 现场进度（按合批刀次的全部成员纸张汇总父刀依赖；校验已完成全局刀号、乱序/未知刀号 400；输出可执行/阻塞刀次与班次/整单完成率）
 ├── src/sampling.js      # 裁切抽检计划（已分配全局刀次为必覆盖目标；新增覆盖刀次→参与总数→纸张序号逐轮选纸；覆盖率、逐轮依据、未覆盖与单列未分配刀；成员引用/重复归属/工单排程一致性 400）
 ├── public/
-│   ├── index.html       # 单页界面（单张/批量/多纸型三种模式，纹向、订单号与隔离开关录入，单张模式含比选目标分段控件，批量/成本结果含叠纸排程、执行工单与现场进度面板）
+│   ├── index.html       # 单页界面（单张/批量/多纸型三种模式，纹向、订单号与隔离开关录入，单张模式含比选目标分段控件，批量/成本结果含叠纸排程、执行工单与现场进度面板，含余料入库入口与顶部导航）
+│   ├── offcuts.html     # 余料库存页（排料结果/手工入库、状态纹向来源批次查询、可用/已预占余料表、预占表单与缺口明细、预占单卡片与释放）
 │   ├── style.css
-│   └── app.js           # 表单交互 + SVG 渲染 + 比选标签页 + 逐张查看 + 成本/订单汇总 + 叠纸批次表/逐纸进度 + 执行工单班次清单与 JSON/CSV 导出 + 现场进度勾选面板（localStorage 恢复）+ 裁切抽检计划覆盖明细（原生 JS）
+│   ├── app.js           # 表单交互 + SVG 渲染 + 比选标签页 + 逐张查看 + 成本/订单汇总 + 叠纸批次表/逐纸进度 + 执行工单班次清单与 JSON/CSV 导出 + 现场进度勾选面板（localStorage 恢复）+ 裁切抽检计划覆盖明细（原生 JS）
+│   └── offcuts.js       # 余料库存页逻辑（入库 / 查询 / 原子预占 / 释放；接收主页面经 sessionStorage 携带的排料结果）
 ├── test/smoke.test.js   # 单张/固定纸型批量算法不变量测试（node:test，无额外依赖）
 ├── test/compare.test.js # 方案比选测试：三策略候选、两种目标决胜链、全部排不进不指定最佳、确定性、校验
 ├── test/cost.test.js    # 多纸型成本排产测试：择优规则、同分顺序、库存、终止原因、校验
@@ -791,6 +916,8 @@ npm start          # 默认 http://localhost:3000，可用 PORT=8080 npm start �
 ├── test/workorder.test.js # 执行工单测试：拓扑分班与班容量守恒、不打乱批次内纸张顺序、跨班次依赖、超容量/父刀缺失/阻断/环、CSV 导出、校验
 ├── test/progress.test.js  # 现场进度测试：就绪/阻塞判定、合批成员父刀汇总（任一张父刀未完成整批不可就绪）、未知刀号与乱序完成 400、未分配父刀持续阻塞、推断依赖与 sheets 回退、班次/整单完成率、确定性、校验
 ├── test/sampling.test.js  # 裁切抽检计划测试：逐轮新增覆盖→参与总数→纸张序号决胜、达上限/全覆盖停止、覆盖率守恒、未分配刀单列不计分母、blocked 成员不可覆盖、确定性、成员引用缺失/重复归属/工单排程不一致 400
+├── test/offcuts.test.js   # 余料库存测试：frees 标准化（纸型/纹向/刀缝/坐标/尺寸/来源批次）、单张/批量/成本/比选/手工入库、状态纹向来源批次查询、最小剩余面积选料与平局决胜、旋转/纹向可行性、多件整料预占、原子性（缺口不扣料 409 与缺口明细）、释放恢复、面积守恒、确定性、参数校验
+├── test/offcuts-http.test.js # 余料 HTTP 链路测试：ingest/查询/allocate（含 409/400）/release（含 404）、排料返回体直接入库
 ├── Dockerfile
 └── docker-compose.yml
 ```
@@ -875,3 +1002,11 @@ CSV 表头/逐纸已分配行/未分配行/字段转义与 UTF-8 BOM，
 同输入两次结果完全一致（确定性），以及缺少 workOrder/schedule、`maxSamples` 非 1～500 整数、
 成员引用缺失、排程批内 / 跨批重复归属、工单成员与排程批次不一致、来源批次不存在、
 全局刀号重复、未分配批次漏登记、未分配刀重复登记等参数校验（均返回 HTTP 400）。
+
+余料库存另覆盖：单张 / 批量 / 成本 / 比选结果 / 手工五种入库形态与字段保留（纸型、纹向、刀缝、
+坐标、尺寸、来源批次与逐张 / 轮次 / 纸型 / 订单号来源）、自动批次号、状态 / 纹向 / 来源 /
+批次筛选、最小剩余面积选料与短边 / 长边 / 不旋转 / 录入序号平局决胜、旋转与纹向可行性
+（纹向不符的几何可行朝向不可选）、多件整料预占（一件一条记录）、已预占记录不参与后续分配、
+**数量不足（含部分可行）时 HTTP 409 返回缺口明细且不扣减任何记录**、释放后恢复可用与重复释放 404、
+可用 / 已预占面积守恒与同输入确定性，以及尺寸 / 数量 / 纹向 / 批次号等参数校验；
+HTTP 链路另覆盖入库、查询、预占（409 / 400）、释放（404）与排料返回体直接入库。

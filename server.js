@@ -8,6 +8,17 @@ const { stackSchedule } = require('./src/stack');
 const { workOrder, workOrderCsv } = require('./src/workorder');
 const { workOrderProgress } = require('./src/progress');
 const { samplingPlan } = require('./src/sampling');
+const {
+  createOffcutStore,
+  ingestOffcuts,
+  queryOffcuts,
+  allocateOffcuts,
+  releaseAllocation,
+  OffcutError,
+} = require('./src/offcuts');
+
+// 余料库存为进程内内存态（单实例；重启清空，不依赖外部存储）
+const offcutStore = createOffcutStore();
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
@@ -124,8 +135,65 @@ app.post('/api/layout/stack/work-order/sampling', (req, res) => {
   }
 });
 
-app.listen(PORT, () => {
-  console.log(`单张纸裁切试排服务已启动: http://localhost:${PORT}`);
+/* ---------------- 余料库存与复用预占 ---------------- */
+
+// 余料入库：把排料结果（单张 layout / 批量 / 成本结果的 frees）或手工录入
+// 标准化为可追踪余料记录（纸型、纹向、刀缝、坐标、尺寸、来源批次）
+app.post('/api/offcuts/ingest', (req, res) => {
+  try {
+    const result = ingestOffcuts(req.body || {}, offcutStore);
+    res.json(result);
+  } catch (err) {
+    offcutError(res, err);
+  }
 });
+
+// 余料查询：可用 / 已预占，可按状态、纹向、来源类型、来源批次筛选
+app.get('/api/offcuts', (req, res) => {
+  try {
+    const result = queryOffcuts(req.query || {}, offcutStore);
+    res.json(result);
+  } catch (err) {
+    offcutError(res, err);
+  }
+});
+
+// 复用预占：给定成品宽高、数量、纹向要求，按旋转/纹向可行性及最小剩余面积
+// 确定性选料；一次请求原子预占足量余料，不足时不扣减任何记录并返回缺口明细（409）
+app.post('/api/offcuts/allocate', (req, res) => {
+  try {
+    const result = allocateOffcuts(req.body || {}, offcutStore);
+    res.json(result);
+  } catch (err) {
+    offcutError(res, err);
+  }
+});
+
+// 释放预占：按预占单号释放其名下全部余料，恢复可用
+app.post('/api/offcuts/release/:reservationId', (req, res) => {
+  try {
+    const result = releaseAllocation(req.params.reservationId, offcutStore);
+    res.json(result);
+  } catch (err) {
+    offcutError(res, err);
+  }
+});
+
+function offcutError(res, err) {
+  if (err instanceof OffcutError) {
+    const body = { error: err.message || '请求无效' };
+    if (err.code) body.code = err.code;
+    if (err.shortage) body.shortage = err.shortage;
+    res.status(err.statusCode || 400).json(body);
+    return;
+  }
+  res.status(400).json({ error: err.message || '请求无效' });
+}
+
+if (require.main === module) {
+  app.listen(PORT, () => {
+    console.log(`单张纸裁切试排服务已启动: http://localhost:${PORT}`);
+  });
+}
 
 module.exports = app;
