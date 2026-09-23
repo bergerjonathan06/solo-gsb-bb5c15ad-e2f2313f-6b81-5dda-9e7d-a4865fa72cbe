@@ -1756,6 +1756,26 @@ function setActiveTab(i) {
     b.classList.toggle('active', j === i));
 }
 
+/* ---------------- 余料库存登记（共享最近排料结果给余料页） ---------------- */
+
+let latestLayoutResult = null;
+window.layoutLatestResult = null;
+
+/**
+ * 记录最近一次排料结果（单张比选 / 批量 / 多纸型成本）并展示
+ * 「登记余料入库」面板；offcuts.js 通过 window.layoutLatestResult 读取。
+ */
+function setLatestLayoutResult(data) {
+  latestLayoutResult = data;
+  window.layoutLatestResult = data;
+  const panel = $('offcutIngestPanel');
+  panel.hidden = false;
+  const msg = $('ingestMsg');
+  msg.hidden = true;
+  msg.textContent = '';
+  msg.className = 'form-error';
+}
+
 async function generate() {
   const errBox = $('formError');
   errBox.hidden = true;
@@ -1784,15 +1804,18 @@ async function generate() {
       clearBatchUi();
       clearCompareUi();
       renderCost(data);
+      setLatestLayoutResult(data);
     } else if (mode === 'batch') {
       clearCostUi();
       clearCompareUi();
       renderBatch(data);
+      setLatestLayoutResult(data);
     } else {
       clearBatchUi();
       clearCostUi();
       clearOrderSummary();
       renderCompare(data);
+      setLatestLayoutResult(data);
     }
   } catch (e) {
     errBox.textContent = e.message;

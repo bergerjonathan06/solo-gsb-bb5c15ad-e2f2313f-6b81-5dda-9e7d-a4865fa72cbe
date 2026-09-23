@@ -8,6 +8,13 @@ const { stackSchedule } = require('./src/stack');
 const { workOrder, workOrderCsv } = require('./src/workorder');
 const { workOrderProgress } = require('./src/progress');
 const { samplingPlan } = require('./src/sampling');
+const {
+  ingestOffcuts,
+  createOffcut,
+  listOffcuts,
+  allocateOffcuts,
+  releaseAllocations,
+} = require('./src/offcuts');
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
@@ -118,6 +125,61 @@ app.post('/api/layout/stack/work-order/sampling', (req, res) => {
   try {
     const body = req.body || {};
     const result = samplingPlan(body);
+    res.json(result);
+  } catch (err) {
+    res.status(400).json({ error: err.message || '输入无效' });
+  }
+});
+
+/* ---------------- 余料库存与复用预占 ---------------- */
+
+// 余料录入：手工录入单条余料（纸型/纹向/刀缝/尺寸/来源批次）
+app.post('/api/offcuts', (req, res) => {
+  try {
+    const result = createOffcut(req.body || {});
+    res.status(201).json(result);
+  } catch (err) {
+    res.status(400).json({ error: err.message || '输入无效' });
+  }
+});
+
+// 余料批量登记：把现有排料结果（单张 / 批量 / 多纸型成本 / 方案比选）
+// 每张纸 layout.frees 标准化为可追踪余料记录
+app.post('/api/offcuts/ingest', (req, res) => {
+  try {
+    const result = ingestOffcuts(req.body || {});
+    res.status(201).json(result);
+  } catch (err) {
+    res.status(400).json({ error: err.message || '输入无效' });
+  }
+});
+
+// 余料查询：可用 / 已预占、最小尺寸、纹向、关键字
+app.get('/api/offcuts', (req, res) => {
+  try {
+    const result = listOffcuts(req.query || {});
+    res.json(result);
+  } catch (err) {
+    res.status(400).json({ error: err.message || '输入无效' });
+  }
+});
+
+// 复用预占：给定成品宽高、数量与纹向要求，按旋转/纹向可行性与
+// 最小剩余面积确定性选择余料；原子预占足量余料，无法满足时
+// 不扣减任何已占用记录并返回缺口明细（HTTP 200，status:'shortfall'）
+app.post('/api/offcuts/allocate', (req, res) => {
+  try {
+    const result = allocateOffcuts(req.body || {});
+    res.json(result);
+  } catch (err) {
+    res.status(400).json({ error: err.message || '输入无效' });
+  }
+});
+
+// 释放预占：按预占单号或余料编号一次性释放
+app.post('/api/offcuts/release', (req, res) => {
+  try {
+    const result = releaseAllocations(req.body || {});
     res.json(result);
   } catch (err) {
     res.status(400).json({ error: err.message || '输入无效' });

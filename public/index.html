@@ -9,10 +9,14 @@
 <body>
   <header class="topbar">
     <h1>单张纸直线裁切试排</h1>
-    <p class="subtitle">断头台式裁切 · 每次一刀切到底、一分为二 · 成品允许旋转 90°（受纹向约束） · 刀缝不侵占成品 · 单张试排三策略方案比选 · 支持批量排产、多纸型成本排产、叠纸裁切排程、执行工单、裁切抽检计划与现场进度</p>
+    <p class="subtitle">断头台式裁切 · 每次一刀切到底、一分为二 · 成品允许旋转 90°（受纹向约束） · 刀缝不侵占成品 · 单张试排三策略方案比选 · 支持批量排产、多纸型成本排产、叠纸裁切排程、执行工单、裁切抽检计划与现场进度 · 余料库存登记与复用预占</p>
+    <nav class="topnav" id="topNav">
+      <button type="button" id="navLayout" class="topnav-btn active">裁切试排</button>
+      <button type="button" id="navOffcuts" class="topnav-btn">余料库存与复用 <span id="navOffcutBadge" class="nav-badge" hidden>0</span></button>
+    </nav>
   </header>
 
-  <main class="layout">
+  <main class="layout" id="viewLayout">
     <section class="panel form-panel">
       <h2>纸张与刀缝</h2>
       <div class="field-grid">
@@ -181,6 +185,110 @@
       <div id="cutList" class="cut-list"></div>
       <div id="rankList" class="rank-wrap" hidden></div>
       <div id="unplaced" class="unplaced"></div>
+      <div id="offcutIngestPanel" class="offcut-ingest" hidden>
+        <h3>余料库存登记（把本次排料结果的余料区入库复用）</h3>
+        <div class="offcut-ingest-controls">
+          <label>来源批次号（可留空，自动生成）
+            <input type="text" id="ingestBatchId" maxlength="128" placeholder="如 BATCH-20260923-01" />
+          </label>
+          <button type="button" id="ingestBtn" class="btn btn-primary">把当前结果的余料登记入库</button>
+          <p class="hint">将每张纸 <code>layout.frees</code> 的余料矩形标准化入库：保留<b>纸型、纸张纹向、刀缝、纸面坐标、尺寸与来源批次</b>（含轮次/纸型/订单号）。
+            同批次重复登记相同余料会自动跳过。登记后可在「余料库存与复用」页查询并按成品需求预占。</p>
+        </div>
+        <div id="ingestMsg" class="form-error" hidden></div>
+      </div>
+    </section>
+  </main>
+
+  <main class="layout" id="viewOffcuts" hidden>
+    <section class="panel form-panel">
+      <h2>余料录入</h2>
+      <p class="hint">手工录入切下后留存的余料（尺寸、纸型纹向与刀缝随记录保留）；排料结果中的余料可在「裁切试排」页一键登记。</p>
+      <div class="field-grid">
+        <label>纸型名称（可选）
+          <input type="text" id="ocName" maxlength="64" placeholder="如：大度全张余料 / A3" />
+        </label>
+        <label>来源批次号（可留空）
+          <input type="text" id="ocBatchId" maxlength="128" placeholder="自动生成" />
+        </label>
+        <label>余料宽 (mm)
+          <input type="number" id="ocW" min="0.1" step="0.1" placeholder="宽" />
+        </label>
+        <label>余料高 (mm)
+          <input type="number" id="ocH" min="0.1" step="0.1" placeholder="高" />
+        </label>
+        <label>纸张纹向
+          <select id="ocGrain">
+            <option value="along-width" selected>沿宽（↔）</option>
+            <option value="along-height">沿高（↕）</option>
+          </select>
+        </label>
+        <label>刀缝宽度 (mm)
+          <input type="number" id="ocKerf" value="0" min="0" step="0.1" />
+        </label>
+        <label>订单号（可选）
+          <input type="text" id="ocOrderNo" maxlength="64" placeholder="来源订单号" />
+        </label>
+      </div>
+      <div class="actions">
+        <button type="button" id="ocCreate" class="btn btn-primary">录入余料</button>
+      </div>
+      <div id="ocCreateMsg" class="form-error" hidden></div>
+
+      <h2>复用预占（按成品需求原子占用余料）</h2>
+      <p class="hint">给定成品宽高、数量与纹向要求：仅在<b>可用余料</b>中按<b>旋转 / 纹向可行性</b>筛选，
+        以<b>占用后剩余面积最小</b>确定性择优（平局再比余料面积、短边、长边、不旋转、录入先后）。
+        一次请求<b>预占足量余料</b>；库存不足时<b>不会扣减任何记录</b>，并返回缺口明细（尺寸不足 / 纹向受限）。</p>
+      <div class="field-grid">
+        <label>成品宽 (mm)
+          <input type="number" id="alW" min="0.1" step="0.1" />
+        </label>
+        <label>成品高 (mm)
+          <input type="number" id="alH" min="0.1" step="0.1" />
+        </label>
+        <label>数量（件）
+          <input type="number" id="alQty" value="1" min="1" step="1" />
+        </label>
+        <label>纹向要求
+          <select id="alGrain">
+            <option value="any" selected>不限</option>
+            <option value="along-width">沿自身宽</option>
+            <option value="along-height">沿自身高</option>
+          </select>
+        </label>
+        <label>关联单据（可选）
+          <input type="text" id="alRef" maxlength="128" placeholder="如 工单号 / 订单号" />
+        </label>
+      </div>
+      <div class="actions">
+        <button type="button" id="alCreate" class="btn btn-primary">预占余料</button>
+      </div>
+      <div id="alMsg" class="form-error" hidden></div>
+    </section>
+
+    <section class="panel result-panel">
+      <h2>余料库存</h2>
+      <div class="offcut-filters">
+        <div class="segmented" id="ocStatusSeg" role="group" aria-label="状态筛选">
+          <label><input type="radio" name="ocStatus" value="all" checked /><span>全部</span></label>
+          <label><input type="radio" name="ocStatus" value="available" /><span>可用</span></label>
+          <label><input type="radio" name="ocStatus" value="reserved" /><span>已预占</span></label>
+        </div>
+        <label class="oc-filter">最小宽 <input type="number" id="qMinW" min="0" step="0.1" /></label>
+        <label class="oc-filter">最小高 <input type="number" id="qMinH" min="0" step="0.1" /></label>
+        <label class="oc-filter">纹向
+          <select id="qGrain">
+            <option value="" selected>全部</option>
+            <option value="along-width">沿宽</option>
+            <option value="along-height">沿高</option>
+          </select>
+        </label>
+        <label class="oc-filter oc-filter-grow">关键字 <input type="text" id="qKw" placeholder="纸型 / 批次 / 订单号" /></label>
+        <button type="button" id="ocRefresh" class="btn btn-ghost">刷新查询</button>
+      </div>
+      <div id="ocSummary" class="stats"></div>
+      <div id="ocListWrap" class="oc-table-wrap"></div>
+      <div id="ocAllocations"></div>
     </section>
   </main>
 
@@ -189,5 +297,6 @@
   </footer>
 
   <script src="app.js"></script>
+  <script src="offcuts.js"></script>
 </body>
 </html>
